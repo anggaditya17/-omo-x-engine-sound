@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>OMO X Engine Sound V7</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#080808;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif}
+main{max-width:520px;margin:auto;padding:22px}h1{margin:0;font-size:34px}.sub{color:#888;letter-spacing:2px;font-size:11px}
+.rpm{text-align:center;margin:24px 0}.rpmn{font-size:66px;font-weight:850;font-variant-numeric:tabular-nums}
+.card{background:#191919;border-radius:18px;padding:18px;margin:14px 0}.row{display:flex;justify-content:space-between}.muted{color:#999;font-size:12px}
+input[type=range]{width:100%;accent-color:#ff8a00;margin:22px 0 10px}.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}
+button{border:0;border-radius:12px;padding:14px;font-weight:800;color:#fff;background:#303030}.mode.active{background:#ff8a00}
+.start{width:100%;background:#19a65a;font-size:16px}.start.stop{background:#d93636}.test{width:100%;margin-top:9px;background:#285f9f}
+.status{margin-top:12px;padding:12px;border-radius:12px;background:#111;color:#aaa;font-size:12px}.ok{color:#6ee7a0}.warn{color:#ffd166}
+</style></head>
+<body><main>
+<h1>OMO X</h1><div class="sub">ENGINE SOUND V7 • HYBRID</div>
+<div class="rpm"><div class="rpmn" id="rpm">700</div><div class="muted">VIRTUAL OMO X RPM • MAX 6000</div></div>
+<div class="card"><div class="row"><b>THROTTLE</b><b id="pct">0%</b></div>
+<input id="gas" type="range" min="0" max="100" value="0"><div class="row muted"><span>0</span><span>50</span><span>100</span></div></div>
+<div class="card"><b>SOUND CHARACTER</b><div class="modes">
+<button class="mode active" data-mode="inline4">INLINE-4</button><button class="mode" data-mode="vtwin">V-TWIN</button><button class="mode" data-mode="electric">E-SPORT</button>
+</div></div>
+<button class="start" id="start">▶ START ENGINE</button><button class="test" id="test">🔊 TEST SPEAKER</button>
+<div class="status" id="status">Hubungkan OMO X Bluetooth lalu tekan START ENGINE.</div>
+</main>
+<script>
+let ctx=null,master=null,running=false,mode="inline4",rpm=700,last=performance.now(),raf=0;
+let core=[],idleSrc=null,idleGain=null,texSrc=null,texGain=null;
+const gas=document.getElementById("gas"),rpmEl=document.getElementById("rpm"),pct=document.getElementById("pct"),statusEl=document.getElementById("status");
+const C={
+ inline4:{idle:"audio/inline4_idle.wav",sample:"audio/inline4_source.wav",base:700,max:6000,core0:52,core1:185,tex0:.75,tex1:1.45,pulse:4},
+ vtwin:{idle:"audio/vtwin_idle.wav",sample:"audio/vtwin_source.ogg",base:650,max:6000,core0:38,core1:120,tex0:.62,tex1:1.18,pulse:2},
+ electric:{idle:"audio/electric_idle.wav",sample:"audio/electric_source.wav",base:250,max:6000,core0:70,core1:230,tex0:.55,tex1:1.65,pulse:0}
+};
+const B={};
+
+async function init(){
+ if(!ctx){ctx=new(window.AudioContext||window.webkitAudioContext)();master=ctx.createGain();master.gain.value=.72;master.connect(ctx.destination)}
+ if(ctx.state!=="running")await ctx.resume();
+ statusEl.innerHTML='<span class="ok">Audio aktif</span> • '+ctx.state;
+}
+async function load(u){if(B[u])return B[u];const r=await fetch(u,{cache:"no-store"});if(!r.ok)throw Error("Audio tidak ditemukan: "+u);B[u]=await ctx.decodeAudioData(await r.arrayBuffer());return B[u]}
+function cleanup(){
+ for(const x of core){try{x.stop()}catch(e){}}
+ core=[]; if(idleSrc){try{idleSrc.stop()}catch(e){}}
+ if(texSrc){try{texSrc.stop()}catch(e){}}
+ idleSrc=null;texSrc=null;
+ if(idleGain)idleGain.disconnect();if(texGain)texGain.disconnect();
+ idleGain=texGain=null;
+}
+function makeOsc(freq,type,gainVal){
+ const o=ctx.createOscillator(),g=ctx.createGain();o.type=type;o.frequency.value=freq;g.gain.value=gainVal;o.connect(g);g.connect(master);o.start();return {o,g}
+}
+async function start(){
+ await init();cleanup();const c=C[mode];
+ const ib=await load(c.idle), sb=await load(c.sample);
+ idleSrc=ctx.createBufferSource();idleSrc.buffer=ib;idleSrc.loop=true;idleSrc.playbackRate.value=.95;
+ idleGain=ctx.createGain();idleGain.gain.value=.55;idleSrc.connect(idleGain);idleGain.connect(master);idleSrc.start();
+ // sample texture stays continuous at low level; it is not the engine's pitch driver
+ texSrc=ctx.createBufferSource();texSrc.buffer=sb;texSrc.loop=true;texSrc.playbackRate.value=c.tex0;
+ texGain=ctx.createGain();texGain.gain.value=.001;texSrc.connect(texGain);texGain.connect(master);texSrc.start();
+ running=true;last=performance.now();document.getElementById("start").textContent="■ STOP ENGINE";document.getElementById("start").classList.add("stop");
+ statusEl.innerHTML='<span class="ok">ENGINE RUNNING</span> • '+mode.toUpperCase()+' • HYBRID';update();
+}
+function stop(){running=false;cleanup();document.getElementById("start").textContent="▶ START ENGINE";document.getElementById("start").classList.remove("stop");statusEl.textContent="Engine stopped."}
+
+function update(){
+ const t=Number(gas.value)/100;pct.textContent=Math.round(t*100)+"%";
+ const c=C[mode],target=c.base+Math.pow(t,.80)*(c.max-c.base);
+ const now=performance.now(),dt=Math.min(.05,(now-last)/1000);last=now;
+ const tau=target>rpm?.30:.82;
+ rpm+=(target-rpm)*(1-Math.exp(-dt/tau));rpm=Math.max(c.base,Math.min(c.max,rpm));
+ rpmEl.textContent=Math.round(rpm);
+ if(running){
+   const n=Math.max(0,Math.min(1,(rpm-c.base)/(c.max-c.base)));
+   // V2-like continuous core: always alive and pitch tracks RPM.
+   const f=c.core0+(c.core1-c.core0)*n;
+   // Add harmonics to make it richer than one oscillator.
+   if(!core.length){
+     core=[
+       makeOsc(f,mode==="vtwin"?"triangle":"sawtooth",.055),
+       makeOsc(f*2,mode==="vtwin"?"triangle":"sawtooth",.025),
+       makeOsc(f*3,"sine",.012)
+     ];
+   }
+   const fundamental=core[0],h2=core[1],h3=core[2];
+   fundamental.o.frequency.setTargetAtTime(f,ctx.currentTime,.035);
+   h2.o.frequency.setTargetAtTime(f*2,ctx.currentTime,.035);
+   h3.o.frequency.setTargetAtTime(f*3,ctx.currentTime,.035);
+   // Core grows with throttle, but never disappears entirely.
+   const coreVol=.045+.105*Math.pow(t,.55);
+   fundamental.gain.setTargetAtTime(coreVol,ctx.currentTime,.045);
+   h2.gain.setTargetAtTime(coreVol*.42,ctx.currentTime,.045);
+   h3.gain.setTargetAtTime(coreVol*.18,ctx.currentTime,.045);
+   // Real sample texture is subtle, avoiding "fast-forwarded recording" effect.
+   const idleVol=.54*Math.max(0,1-t/.28);
+   idleGain.gain.setTargetAtTime(Math.max(.004,idleVol),ctx.currentTime,.08);
+   idleSrc.playbackRate.setTargetAtTime(.90+.12*(1-t),ctx.currentTime,.10);
+   const tr=C[mode],texRate=tr.tex0+(tr.tex1-tr.tex0)*n;
+   texSrc.playbackRate.setTargetAtTime(texRate,ctx.currentTime,.06);
+   texGain.gain.setTargetAtTime(.008+.055*Math.pow(t,.8),ctx.currentTime,.08);
+   // V-twin pulse: amplitude modulation creates uneven combustion feel without restarting audio.
+   if(mode==="vtwin"){
+      const pulseHz=Math.max(3.0,rpm/60*1.0);
+      const pulse=0.78+0.22*Math.sin(2*Math.PI*pulseHz*performance.now()/1000);
+      fundamental.gain.setTargetAtTime(coreVol*pulse,ctx.currentTime,.018);
+   }
+ }
+ raf=requestAnimationFrame(update);
+}
+document.querySelectorAll(".mode").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));b.classList.add("active");mode=b.dataset.mode;if(running)await start()});
+document.getElementById("start").onclick=async()=>{try{if(running)stop();else await start()}catch(e){statusEl.innerHTML='<span class="warn">Gagal:</span> '+e.message}};
+document.getElementById("test").onclick=async()=>{try{await init();const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=440;g.gain.value=.28;o.connect(g);g.connect(master);o.start();g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.8);o.stop(ctx.currentTime+.82);statusEl.innerHTML='<span class="ok">TEST TONE</span> • Jika terdengar, output Bluetooth siap.'}catch(e){statusEl.textContent=e.message}};
+update();
+</script></body></html>
