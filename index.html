@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>OMO X Engine Sound V6</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#070707;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif}
+main{max-width:520px;margin:auto;padding:22px}h1{margin:0;font-size:34px}.sub{color:#888;font-size:11px;letter-spacing:2px}
+.rpm{text-align:center;margin:24px 0}.rpmn{font-size:66px;font-weight:850;font-variant-numeric:tabular-nums}
+.card{background:#191919;border-radius:18px;padding:18px;margin:14px 0}.row{display:flex;justify-content:space-between}.muted{color:#999;font-size:12px}
+input[type=range]{width:100%;accent-color:#ff8a00;margin:22px 0 10px}.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}
+button{border:0;border-radius:12px;padding:14px;font-weight:800;color:#fff;background:#303030}.mode.active{background:#ff8a00}
+.start{width:100%;background:#19a65a;font-size:16px}.start.stop{background:#d93636}.test{width:100%;margin-top:9px;background:#285f9f}
+.status{margin-top:12px;padding:12px;border-radius:12px;background:#111;color:#aaa;font-size:12px}.ok{color:#6ee7a0}.warn{color:#ffd166}
+</style></head>
+<body><main>
+<h1>OMO X</h1><div class="sub">ENGINE SOUND V6</div>
+<div class="rpm"><div class="rpmn" id="rpm">700</div><div class="muted">OMO X RPM MODEL • MAX 6000</div></div>
+<div class="card"><div class="row"><b>THROTTLE</b><b id="pct">0%</b></div>
+<input id="gas" type="range" min="0" max="100" value="0"><div class="row muted"><span>0</span><span>50</span><span>100</span></div></div>
+<div class="card"><b>SOUND CHARACTER</b><div class="modes">
+<button class="mode active" data-mode="inline4">INLINE-4</button><button class="mode" data-mode="vtwin">V-TWIN</button><button class="mode" data-mode="electric">E-SPORT</button>
+</div></div>
+<button class="start" id="start">▶ START ENGINE</button><button class="test" id="test">🔊 TEST SPEAKER</button>
+<div class="status" id="status">Hubungkan OMO X Bluetooth lalu tekan START ENGINE.</div>
+</main>
+<script>
+let ctx=null,master=null,running=false,mode="inline4",rpm=700,last=performance.now(),idleSrc=null,idleGain=null;
+const gas=document.getElementById("gas"),rpmEl=document.getElementById("rpm"),pct=document.getElementById("pct"),statusEl=document.getElementById("status");
+const cfg={
+ inline4:{idle:"audio/inline4_idle.wav",main:"audio/inline4_source.wav",base:700,max:6000,rate:.72,hi:1.32},
+ vtwin:{idle:"audio/vtwin_idle.wav",main:"audio/vtwin_source.ogg",base:650,max:6000,rate:.70,hi:1.26},
+ electric:{idle:"audio/electric_idle.wav",main:"audio/electric_source.wav",base:300,max:6000,rate:.62,hi:1.55}
+};
+const buffers={};let mainSrc=null,mainGain=null;
+
+async function init(){
+ if(!ctx){ctx=new(window.AudioContext||window.webkitAudioContext)();master=ctx.createGain();master.gain.value=.82;master.connect(ctx.destination)}
+ if(ctx.state!=="running")await ctx.resume();
+ statusEl.innerHTML='<span class="ok">Audio aktif</span> • '+ctx.state;
+}
+async function load(url){if(buffers[url])return buffers[url];let r=await fetch(url,{cache:"no-store"});if(!r.ok)throw Error("Audio tidak ditemukan: "+url);buffers[url]=await ctx.decodeAudioData(await r.arrayBuffer());return buffers[url]}
+function stopAudio(){
+ if(idleSrc){try{idleSrc.stop()}catch(e){}idleSrc=null}
+ if(mainSrc){try{mainSrc.stop()}catch(e){}mainSrc=null}
+ if(idleGain)idleGain.disconnect(); if(mainGain)mainGain.disconnect();idleGain=mainGain=null;
+}
+async function startEngine(){
+ await init();stopAudio();const c=cfg[mode];
+ const ib=await load(c.idle),mb=await load(c.main);
+ idleSrc=ctx.createBufferSource();idleSrc.buffer=ib;idleSrc.loop=true;idleSrc.playbackRate.value=.92;
+ idleGain=ctx.createGain();idleGain.gain.value=.62;idleSrc.connect(idleGain);idleGain.connect(master);idleSrc.start();
+ mainSrc=ctx.createBufferSource();mainSrc.buffer=mb;mainSrc.loop=true;mainSrc.playbackRate.value=c.rate;
+ mainGain=ctx.createGain();mainGain.gain.value=.001;mainSrc.connect(mainGain);mainGain.connect(master);mainSrc.start();
+ running=true;last=performance.now();document.getElementById("start").textContent="■ STOP ENGINE";document.getElementById("start").classList.add("stop");
+ statusEl.innerHTML='<span class="ok">ENGINE RUNNING</span> • '+mode.toUpperCase()+' • MAX 6000 RPM';update();
+}
+function stopEngine(){running=false;stopAudio();document.getElementById("start").textContent="▶ START ENGINE";document.getElementById("start").classList.remove("stop");statusEl.textContent="Engine stopped."}
+
+function update(){
+ const t=Number(gas.value)/100;pct.textContent=Math.round(t*100)+"%";
+ // Based on observed dashboard behavior: smooth inertial RPM, ~700 idle, 6000 sound ceiling.
+ const target=cfg[mode].base + Math.pow(t,.82)*(cfg[mode].max-cfg[mode].base);
+ const now=performance.now(),dt=Math.min(.05,(now-last)/1000);last=now;
+ // asymmetric inertia: RPM rises a little faster than it falls.
+ const rise=1-Math.exp(-dt/0.32),fall=1-Math.exp(-dt/0.78);
+ rpm += (target-rpm)*(target>rpm?rise:fall);
+ rpm=Math.max(cfg[mode].base,Math.min(cfg[mode].max,rpm));
+ rpmEl.textContent=Math.round(rpm);
+
+ if(running){
+  const c=cfg[mode],n=Math.max(0,Math.min(1,(rpm-c.base)/(c.max-c.base)));
+  // Crossfade idle out gradually over first ~30% throttle.
+  const idleVol=.66*(1-Math.min(1,t/.30));
+  idleGain.gain.setTargetAtTime(Math.max(.005,idleVol),ctx.currentTime,.07);
+  // Slightly change idle pitch, but never restart it.
+  idleSrc.playbackRate.setTargetAtTime(.88+.12*(1-t),ctx.currentTime,.09);
+  // Main loop comes in progressively; pitch follows actual virtual RPM.
+  const rate=c.rate+(c.hi-c.rate)*n;
+  mainSrc.playbackRate.setTargetAtTime(rate,ctx.currentTime,.06);
+  const mainVol=.015+.40*Math.pow(t,.65);
+  mainGain.gain.setTargetAtTime(mainVol,ctx.currentTime,.06);
+ }
+ requestAnimationFrame(update);
+}
+document.querySelectorAll(".mode").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));b.classList.add("active");mode=b.dataset.mode;if(running)await startEngine()});
+document.getElementById("start").onclick=async()=>{try{if(running)stopEngine();else await startEngine()}catch(e){statusEl.innerHTML='<span class="warn">Gagal:</span> '+e.message}};
+document.getElementById("test").onclick=async()=>{try{await init();let o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=440;g.gain.value=.28;o.connect(g);g.connect(master);o.start();g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.8);o.stop(ctx.currentTime+.82);statusEl.innerHTML='<span class="ok">TEST TONE</span> • Jika terdengar, output Bluetooth siap.'}catch(e){statusEl.textContent=e.message}};
+update();
+</script></body></html>
