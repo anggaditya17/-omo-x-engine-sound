@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>OMO X — Inline 4 Engine Sound V2</title>
+<style>
+:root{--bg:#070707;--card:#151515;--line:#292929;--text:#f5f5f5;--muted:#8d8d8d;--accent:#35e27a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:720px;margin:auto;padding:22px}
+h1{margin:0;font-size:25px}.sub{color:var(--muted);margin:5px 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:14px}
+.rpm{font-size:54px;font-weight:800;letter-spacing:-2px;text-align:center;margin:8px 0 0}
+.label{text-align:center;color:var(--muted);font-size:13px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{border:1px solid var(--line);background:#202020;color:white;padding:14px;border-radius:12px;font-size:15px;font-weight:700}
+button.primary{background:var(--accent);color:#061109;border-color:var(--accent)}
+button:active{transform:scale(.98)}
+.meter{height:14px;background:#242424;border-radius:99px;overflow:hidden;margin-top:12px}
+.bar{height:100%;width:0%;background:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+.stage{padding:11px 5px;text-align:center;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12px}
+.stage.active{color:#061109;background:var(--accent);border-color:var(--accent);font-weight:800}
+.status{font-size:13px;color:var(--muted);margin-top:10px}
+.small{font-size:12px;color:var(--muted);line-height:1.5}
+@media(max-width:480px){.wrap{padding:15px}.rpm{font-size:46px}.grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>OMO X — Inline 4 Engine Sound</h1>
+<div class="sub">Idle → Mid RPM → Rev → High RPM</div>
+
+<div class="card">
+<div class="label">ENGINE RPM</div>
+<div id="rpmText" class="rpm">900</div>
+<input id="rpm" type="range" min="700" max="9000" value="900" step="10">
+<div class="meter"><div id="bar" class="bar"></div></div>
+<div class="grid">
+<div id="sIdle" class="stage">IDLE<br>&lt; 1.800</div>
+<div id="sMid" class="stage">MID<br>1.800–3.500</div>
+<div id="sRev" class="stage">REV<br>3.500–6.000</div>
+<div id="sHigh" class="stage">HIGH<br>&gt; 6.000</div>
+</div>
+</div>
+
+<div class="card">
+<div class="row">
+<button id="start" class="primary">▶ START ENGINE</button>
+<button id="stop">■ STOP</button>
+</div>
+<div class="status" id="status">Engine OFF</div>
+</div>
+
+<div class="card">
+<div class="label">THROTTLE / RPM</div>
+<input id="throttle" type="range" min="0" max="100" value="0">
+<div class="small">Throttle menaikkan RPM. Lepas throttle akan turun kembali ke idle.</div>
+</div>
+
+<div class="card">
+<b>Audio Engine</b>
+<div class="small" id="loading" style="margin-top:8px">Audio dimuat saat START.</div>
+</div>
+</div>
+
+<script>
+/*
+  V2 anti-lag architecture:
+  - Tidak memakai 4 HTMLAudioElement.
+  - Semua WAV di-fetch + decode sekali menjadi AudioBuffer.
+  - Hanya satu AudioBufferSourceNode per layer.
+  - Source dibuat sekali, loop=true.
+  - Gain crossfade berjalan di Web Audio thread.
+  - UI hanya meng-update target RPM, bukan audio setiap frame.
+  Ini jauh lebih ringan di iPhone/Safari.
+*/
+
+const FILES={
+  idle:"OMO_X_Inline4_IDLE.wav",
+  mid:"OMO_X_Inline4_MID.wav",
+  rev:"OMO_X_Inline4_REV.wav",
+  high:"OMO_X_Inline4_HIGH.wav"
+};
+
+let ctx=null, master=null, sources={}, gains={}, buffers={};
+let running=false, loading=false;
+let currentRPM=900, targetRPM=900;
+let lastUI=0, lastAudio=0;
+
+const rpmEl=document.getElementById("rpm");
+const throttleEl=document.getElementById("throttle");
+const rpmText=document.getElementById("rpmText");
+const bar=document.getElementById("bar");
+const statusEl=document.getElementById("status");
+const loadingEl=document.getElementById("loading");
+
+function clamp(x,a,b){return Math.max(a,Math.min(b,x))}
+function smooth(a,b,x){
+  const t=clamp((x-a)/(b-a),0,1);
+  return t*t*(3-2*t);
+}
+
+function layerMix(rpm){
+  // Overlap deliberately wide to prevent audible hard switching.
+  const idle=1-smooth(1350,2100,rpm);
+  const mid=smooth(1500,2150,rpm)*(1-smooth(3300,4000,rpm));
+  const rev=smooth(3250,4050,rpm)*(1-smooth(5700,6600,rpm));
+  const high=smooth(5600,6600,rpm);
+
+  // Prevent the combined layers from getting too loud.
+  const sum=idle+mid+rev+high || 1;
+  return {
+    idle:idle/sum,
+    mid:mid/sum,
+    rev:rev/sum,
+    high:high/sum
+  };
+}
+
+async function decodeFile(url){
+  const response=await fetch(url,{cache:"force-cache"});
+  if(!response.ok) throw new Error("Tidak bisa memuat "+url);
+  const array=await response.arrayBuffer();
+  return await ctx.decodeAudioData(array);
+}
+
+async function startEngine(){
+  if(running || loading)return;
+
+  loading=true;
+  statusEl.textContent="Loading audio…";
+  loadingEl.textContent="Memuat 4 sample WAV…";
+
+  try{
+    ctx=new (window.AudioContext||window.webkitAudioContext)({
+      latencyHint:"interactive"
+    });
+
+    await ctx.resume();
+
+    master=ctx.createGain();
+    master.gain.value=0.82;
+    master.connect(ctx.destination);
+
+    // Decode sequentially to avoid four simultaneous decodes on iPhone.
+    for(const key of Object.keys(FILES)){
+      loadingEl.textContent="Loading "+key.toUpperCase()+"…";
+      buffers[key]=await decodeFile(FILES[key]);
+    }
+
+    // Create each looping source exactly once.
+    for(const key of Object.keys(FILES)){
+      const source=ctx.createBufferSource();
+      source.buffer=buffers[key];
+      source.loop=true;
+      source.loopStart=0;
+      source.loopEnd=buffers[key].duration;
+
+      const gain=ctx.createGain();
+      gain.gain.value=0;
+
+      source.connect(gain).connect(master);
+      source.start(0);
+
+      sources[key]=source;
+      gains[key]=gain;
+    }
+
+    running=true;
+    loading=false;
+    statusEl.textContent="Engine ON";
+    loadingEl.textContent="4 sample loaded • Web Audio low-latency mode";
+
+    applyAudio(true);
+  }catch(err){
+    console.error(err);
+    loading=false;
+    running=false;
+    statusEl.textContent="Audio gagal dimuat";
+    loadingEl.textContent="Pastikan index.html dan 4 file WAV berada di folder yang sama.";
+    if(ctx){try{await ctx.close()}catch(e){}}
+    ctx=null; master=null; sources={}; gains={}; buffers={};
+  }
+}
+
+function stopEngine(){
+  running=false;
+
+  Object.values(sources).forEach(s=>{
+    try{s.stop()}catch(e){}
+    try{s.disconnect()}catch(e){}
+  });
+  Object.values(gains).forEach(g=>{try{g.disconnect()}catch(e){}});
+
+  sources={};gains={};buffers={};
+
+  if(ctx){
+    try{ctx.close()}catch(e){}
+  }
+  ctx=null;master=null;
+
+  statusEl.textContent="Engine OFF";
+  loadingEl.textContent="Audio dimuat saat START.";
+}
+
+function applyAudio(immediate=false){
+  if(!running || !ctx)return;
+
+  const mix=layerMix(currentRPM);
+  const now=ctx.currentTime;
+  const tc=immediate?0.01:0.035;
+
+  Object.keys(gains).forEach(key=>{
+    const g=gains[key];
+    g.gain.cancelScheduledValues(now);
+    g.gain.setTargetAtTime(mix[key],now,tc);
+  });
+
+  /*
+    Sample RPM anchors:
+    IDLE ≈ 900 RPM
+    MID  ≈ 2,500 RPM
+    REV  ≈ 4,500 RPM
+    HIGH ≈ 7,200 RPM
+
+    Playback rate is kept conservative so samples don't sound
+    unnaturally chipmunk/slow.
+  */
+  const rates={
+    idle:clamp(0.78+(currentRPM-700)/5000*0.30,0.76,1.10),
+    mid: clamp(0.78+(currentRPM-1500)/6500*0.38,0.76,1.18),
+    rev: clamp(0.78+(currentRPM-3000)/6000*0.48,0.78,1.25),
+    high:clamp(0.80+(currentRPM-5000)/5000*0.42,0.80,1.22)
+  };
+
+  Object.keys(sources).forEach(key=>{
+    // Only assign when materially changed; avoids needless audio-thread messages.
+    if(Math.abs((sources[key].playbackRate.value||0)-rates[key])>0.008){
+      sources[key].playbackRate.setTargetAtTime(rates[key],now,0.025);
+    }
+  });
+}
+
+function updateVisual(){
+  rpmText.textContent=Math.round(currentRPM).toLocaleString("id-ID");
+  bar.style.width=(clamp((currentRPM-700)/(9000-700),0,1)*100)+"%";
+
+  ["sIdle","sMid","sRev","sHigh"].forEach(id=>document.getElementById(id).classList.remove("active"));
+  const id=currentRPM<1800?"sIdle":currentRPM<3500?"sMid":currentRPM<6000?"sRev":"sHigh";
+  document.getElementById(id).classList.add("active");
+}
+
+rpmEl.addEventListener("input",e=>{
+  targetRPM=Number(e.target.value);
+});
+
+throttleEl.addEventListener("input",e=>{
+  const t=Number(e.target.value)/100;
+  // More natural throttle response.
+  targetRPM=900+(t*t)*8100;
+  rpmEl.value=targetRPM;
+});
+
+document.getElementById("start").addEventListener("click",startEngine);
+document.getElementById("stop").addEventListener("click",stopEngine);
+
+function loop(t){
+  const dt=Math.min(0.05,(t-lastUI)/1000||0);
+  lastUI=t;
+
+  if(running){
+    // Fast spool-up, slower engine braking.
+    const response=targetRPM>currentRPM?7.0:2.7;
+    currentRPM+=(targetRPM-currentRPM)*Math.min(1,dt*response);
+
+    if(t-lastAudio>45){
+      lastAudio=t;
+      applyAudio(false);
+    }
+
+    if(t-lastUI<0){} // no-op
+  }else{
+    currentRPM+=(900-currentRPM)*Math.min(1,dt*4);
+  }
+
+  // UI update can run at normal animation cadence without touching audio nodes.
+  if(t-lastUI>=0){
+    rpmEl.value=currentRPM;
+    throttleEl.value=clamp(Math.sqrt(Math.max(0,currentRPM-900)/8100)*100,0,100);
+    updateVisual();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+updateVisual();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
