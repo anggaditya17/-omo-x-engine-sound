@@ -1,0 +1,117 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>OMO X Engine Sound</title>
+<style>
+*{box-sizing:border-box}
+body{background:#090909;color:white;font-family:-apple-system,Arial;margin:0;padding:25px}
+main{max-width:500px;margin:auto}
+h1{margin-bottom:0;font-size:34px}
+small{color:#999;letter-spacing:2px}
+.rpm{text-align:center;margin:45px 0}
+#rpm{font-size:70px;font-weight:bold}
+.card{background:#1c1c1c;padding:20px;border-radius:18px;margin-bottom:20px}
+.row{display:flex;justify-content:space-between}
+input{width:100%;accent-color:#ff8a00;margin:25px 0}
+.modes{display:flex;gap:8px;margin-top:15px}
+button{border:0;border-radius:12px;padding:15px;color:white;font-weight:bold}
+.mode{flex:1;background:#333}
+.active{background:#ff8a00}
+#start{width:100%;background:#18a558;font-size:17px}
+p{text-align:center;color:#999;font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<h1>OMO X</h1>
+<small>ENGINE SOUND V1</small>
+
+<div class="rpm">
+<div id="rpm">900</div>
+<small>RPM</small>
+</div>
+
+<div class="card">
+<div class="row">
+<b>THROTTLE</b>
+<b id="percent">0%</b>
+</div>
+<input id="gas" type="range" min="0" max="100" value="0">
+</div>
+
+<div class="card">
+<b>SOUND MODE</b>
+<div class="modes">
+<button class="mode active" onclick="setMode('sport',this)">SPORT</button>
+<button class="mode" onclick="setMode('motogp',this)">MOTOGP</button>
+<button class="mode" onclick="setMode('v8',this)">V8</button>
+</div>
+</div>
+
+<button id="start" onclick="toggle()">▶ START ENGINE</button>
+<p>Hubungkan iPhone ke Bluetooth speaker OMO X terlebih dahulu.</p>
+</main>
+
+<script>
+let ctx,osc,gain,running=false,mode="sport";
+let rpm=900;
+const gas=document.getElementById("gas");
+const limits={sport:10000,motogp:13500,v8:7500};
+
+function setMode(value,button){
+mode=value;
+document.querySelectorAll(".mode").forEach(b=>b.classList.remove("active"));
+button.classList.add("active");
+}
+
+function toggle(){
+if(!running){
+ctx=ctx||new(window.AudioContext||window.webkitAudioContext)();
+ctx.resume();
+osc=ctx.createOscillator();
+gain=ctx.createGain();
+osc.type=mode==="v8"?"square":"sawtooth";
+gain.gain.value=0.05;
+osc.connect(gain);
+gain.connect(ctx.destination);
+osc.start();
+running=true;
+document.getElementById("start").textContent="■ STOP ENGINE";
+document.getElementById("start").style.background="#d93636";
+}else{
+osc.stop();
+osc.disconnect();
+running=false;
+document.getElementById("start").textContent="▶ START ENGINE";
+document.getElementById("start").style.background="#18a558";
+}
+}
+
+function update(){
+const throttle=Number(gas.value)/100;
+const target=900+throttle*(limits[mode]-900);
+rpm+=(target-rpm)*0.1;
+document.getElementById("rpm").textContent=Math.round(rpm);
+document.getElementById("percent").textContent=gas.value+"%";
+
+if(running){
+osc.type=mode==="v8"?"square":"sawtooth";
+osc.frequency.setTargetAtTime(
+rpm/(mode==="v8"?120:60),
+ctx.currentTime,0.04
+);
+gain.gain.setTargetAtTime(
+0.03+throttle*0.12,
+ctx.currentTime,0.04
+);
+}
+requestAnimationFrame(update);
+}
+update();
+</script>
+</body>
+</html>
