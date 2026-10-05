@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>OMO X — Inline 4 Engine Sound</title>
+<style>
+:root{
+  --bg:#070707;--card:#151515;--line:#292929;--text:#f5f5f5;
+  --muted:#8d8d8d;--accent:#35e27a;--danger:#ff5757;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+.wrap{max-width:720px;margin:auto;padding:22px}
+h1{margin:0;font-size:25px}
+.sub{color:var(--muted);margin:5px 0 20px}
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:18px;
+  padding:18px;margin-bottom:14px;
+}
+.rpm{
+  font-size:54px;font-weight:800;letter-spacing:-2px;
+  text-align:center;margin:8px 0 0;
+}
+.label{text-align:center;color:var(--muted);font-size:13px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{
+  border:1px solid var(--line);background:#202020;color:white;
+  padding:14px;border-radius:12px;font-size:15px;font-weight:700;
+}
+button.primary{background:var(--accent);color:#061109;border-color:var(--accent)}
+button:active{transform:scale(.98)}
+.meter{
+  height:14px;background:#242424;border-radius:99px;overflow:hidden;margin-top:12px
+}
+.bar{height:100%;width:0%;background:var(--accent);transition:width .08s linear}
+.small{font-size:12px;color:var(--muted);line-height:1.5}
+.grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px
+}
+.stage{
+  padding:11px 5px;text-align:center;border:1px solid var(--line);
+  border-radius:10px;color:var(--muted);font-size:12px
+}
+.stage.active{color:#061109;background:var(--accent);border-color:var(--accent);font-weight:800}
+.status{font-size:13px;color:var(--muted);margin-top:10px}
+@media(max-width:480px){
+  .wrap{padding:15px}.rpm{font-size:46px}.grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>OMO X — Inline 4 Engine Sound</h1>
+  <div class="sub">Idle → Mid RPM → Rev → High RPM</div>
+
+  <div class="card">
+    <div class="label">ENGINE RPM</div>
+    <div id="rpmText" class="rpm">900</div>
+    <input id="rpm" type="range" min="700" max="9000" value="900" step="10">
+    <div class="meter"><div id="bar" class="bar"></div></div>
+
+    <div class="grid">
+      <div id="sIdle" class="stage">IDLE<br>&lt; 1.800</div>
+      <div id="sMid" class="stage">MID<br>1.800–3.500</div>
+      <div id="sRev" class="stage">REV<br>3.500–6.000</div>
+      <div id="sHigh" class="stage">HIGH<br>&gt; 6.000</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="start" class="primary">▶ START ENGINE</button>
+      <button id="stop">■ STOP</button>
+    </div>
+    <div class="status" id="status">Engine OFF</div>
+  </div>
+
+  <div class="card">
+    <div class="label">THROTTLE / RPM</div>
+    <input id="throttle" type="range" min="0" max="100" value="0">
+    <div class="small">
+      Throttle menaikkan RPM secara simulasi. Lepas throttle akan turun perlahan
+      kembali ke idle.
+    </div>
+  </div>
+
+  <div class="card">
+    <b>File audio</b>
+    <div class="small" style="margin-top:8px">
+      OMO_X_Inline4_IDLE.wav<br>
+      OMO_X_Inline4_MID.wav<br>
+      OMO_X_Inline4_REV.wav<br>
+      OMO_X_Inline4_HIGH.wav
+    </div>
+  </div>
+</div>
+
+<script>
+const files = {
+  idle: "OMO_X_Inline4_IDLE.wav",
+  mid:  "OMO_X_Inline4_MID.wav",
+  rev:  "OMO_X_Inline4_REV.wav",
+  high: "OMO_X_Inline4_HIGH.wav"
+};
+
+let ctx = null;
+let running = false;
+let nodes = {};
+let gains = {};
+let lastTime = performance.now();
+let currentRPM = 900;
+let targetRPM = 900;
+
+const rpmEl = document.getElementById("rpm");
+const rpmText = document.getElementById("rpmText");
+const throttleEl = document.getElementById("throttle");
+const bar = document.getElementById("bar");
+const statusEl = document.getElementById("status");
+
+function makeAudio(url){
+  const a = new Audio(url);
+  a.loop = true;
+  a.preload = "auto";
+  a.crossOrigin = "anonymous";
+  return a;
+}
+
+async function startEngine(){
+  if(running) return;
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  for(const key of Object.keys(files)){
+    const audio = makeAudio(files[key]);
+    const source = ctx.createMediaElementSource(audio);
+    const gain = ctx.createGain();
+
+    gain.gain.value = 0;
+    source.connect(gain).connect(ctx.destination);
+
+    nodes[key] = audio;
+    gains[key] = gain;
+  }
+
+  await ctx.resume();
+
+  for(const a of Object.values(nodes)){
+    try{
+      await a.play();
+    }catch(e){
+      console.error(e);
+    }
+  }
+
+  running = true;
+  statusEl.textContent = "Engine ON";
+  updateAudio();
+}
+
+function stopEngine(){
+  running = false;
+  for(const a of Object.values(nodes)){
+    a.pause();
+    a.currentTime = 0;
+  }
+  nodes = {};
+  gains = {};
+  if(ctx){
+    ctx.close();
+    ctx = null;
+  }
+  statusEl.textContent = "Engine OFF";
+}
+
+function stageGains(rpm){
+  // Smooth overlap between layers instead of hard switching.
+  const idle = 1 - smoothstep(1400, 2100, rpm);
+  const mid  = smoothstep(1500, 2100, rpm) * (1 - smoothstep(3200, 3900, rpm));
+  const rev  = smoothstep(3200, 4000, rpm) * (1 - smoothstep(5700, 6500, rpm));
+  const high = smoothstep(5600, 6500, rpm);
+
+  return {idle, mid, rev, high};
+}
+
+function smoothstep(a,b,x){
+  const t=Math.max(0,Math.min(1,(x-a)/(b-a)));
+  return t*t*(3-2*t);
+}
+
+function updateAudio(){
+  if(!running || !ctx) return;
+
+  const g = stageGains(currentRPM);
+  const now = ctx.currentTime;
+
+  // Overall sound level.
+  const master = 0.82;
+
+  for(const key of Object.keys(g)){
+    if(gains[key]){
+      gains[key].gain.cancelScheduledValues(now);
+      gains[key].gain.setTargetAtTime(g[key]*master, now, 0.045);
+    }
+  }
+
+  // Playback speed follows RPM. Each source keeps its own character,
+  // while higher RPM makes the sample feel more aggressive.
+  const speeds = {
+    idle: 0.82 + currentRPM/9000*0.28,
+    mid:  0.82 + currentRPM/9000*0.34,
+    rev:  0.78 + currentRPM/9000*0.42,
+    high: 0.82 + currentRPM/9000*0.50
+  };
+
+  for(const key of Object.keys(nodes)){
+    nodes[key].playbackRate = speeds[key];
+  }
+
+  const pct=(currentRPM-700)/(9000-700)*100;
+  bar.style.width = Math.max(0,Math.min(100,pct))+"%";
+
+  rpmText.textContent = Math.round(currentRPM).toLocaleString("id-ID");
+  updateStages(currentRPM);
+}
+
+function updateStages(rpm){
+  ["sIdle","sMid","sRev","sHigh"].forEach(id =>
+    document.getElementById(id).classList.remove("active")
+  );
+
+  let id;
+  if(rpm < 1800) id="sIdle";
+  else if(rpm < 3500) id="sMid";
+  else if(rpm < 6000) id="sRev";
+  else id="sHigh";
+
+  document.getElementById(id).classList.add("active");
+}
+
+rpmEl.addEventListener("input", e=>{
+  targetRPM = Number(e.target.value);
+});
+
+throttleEl.addEventListener("input", e=>{
+  const t=Number(e.target.value)/100;
+  targetRPM = 900 + t*t*8100;
+  rpmEl.value = targetRPM;
+});
+
+document.getElementById("start").addEventListener("click",startEngine);
+document.getElementById("stop").addEventListener("click",stopEngine);
+
+function loop(t){
+  const dt=Math.min(0.05,(t-lastTime)/1000);
+  lastTime=t;
+
+  if(running){
+    // Smooth RPM movement.
+    const response = targetRPM > currentRPM ? 5.5 : 2.4;
+    currentRPM += (targetRPM-currentRPM) * Math.min(1,dt*response);
+
+    rpmEl.value = currentRPM;
+    throttleEl.value =
+      Math.max(0,Math.min(100,Math.sqrt(Math.max(0,currentRPM-900)/8100)*100));
+
+    updateAudio();
+  }else{
+    currentRPM += (900-currentRPM)*Math.min(1,dt*4);
+    rpmText.textContent = Math.round(currentRPM).toLocaleString("id-ID");
+    updateStages(currentRPM);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+updateStages(currentRPM);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
